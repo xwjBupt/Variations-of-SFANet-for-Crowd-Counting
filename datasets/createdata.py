@@ -177,6 +177,10 @@ if __name__ == '__main__':
     f.close()
 
     for k, v in tqdm(content.items()):
+        savename = '/widerface/density/' + k.replace('.jpg', '.pkl')
         img = cv2.imread(k)
         img_shape = [img.shape[0], img.shape[1]]
-        gaussian_filter_density(img, v['center'], v['boxes'])
+        density = gaussian_filter_density(img, v['center'], v['boxes'])
+        f = open(savename, 'wb')
+        pickle.dump(content, f)
+        f.close()
