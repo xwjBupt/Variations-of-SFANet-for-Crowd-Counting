@@ -1,40 +1,12 @@
 # -*- coding: utf-8 -*- 
 # @Time : 2020/11/24 2:27 下午 
 # @Author : xwj
-from termcolor import cprint
-import datetime
-import torch.utils.data.dataloader as dataloader
-import math
-import sys
-import pdb
-from termcolor import cprint
-import torch
-from matplotlib import cm
-from tqdm import tqdm
-import time
-import shutil
-import nibabel as nib
-import pdb
-import argparse
-import matplotlib.pyplot as plt
-import os
-from torch.optim import lr_scheduler
-import loguru
-import io
-import PIL.Image
-import numpy as np
-import glob
-# -*- coding: utf-8 -*-
+
 import numpy as np
 import scipy
-import scipy.io as io
 from scipy.ndimage.filters import gaussian_filter
-import os
-import glob
+from matplotlib import cm
 from matplotlib import pyplot as plt
-import h5py
-import PIL.Image as Image
-from matplotlib import cm as CM
 from tqdm import tqdm
 import cv2
 import pickle
@@ -43,6 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import math
+import pdb
 
 
 class Gaussian(nn.Module):
@@ -93,7 +66,7 @@ class SumPool2d(nn.Module):
         return self.avgpool(dotmap) * self.area
 
 
-def gaussian_filter_density(img, points, boxes=None, beta=0.1):
+def gaussian_filter_density(img, boxes=None, beta=0.1):
     '''
     This code use k-nearst, will take one minute or more to generate a density-map with one thousand people.
 
@@ -109,78 +82,102 @@ def gaussian_filter_density(img, points, boxes=None, beta=0.1):
     '''
 
     img_shape = [img.shape[0], img.shape[1]]
-    num_faces = len(points)
-    print("Shape of current image: ", img_shape, ". Totally need generate ", len(num_faces), "gaussian kernels.")
+    print("Shape of current image: ", img_shape, ". Totally need generate ", len(boxes), "gaussian kernels.")
     density = np.zeros(img_shape, dtype=np.float32)
-    gt_count = len(num_faces)
+    gt_count = len(boxes)
     if gt_count == 0:
         return density
-
-    leafsize = 2048
-    if gt_count > 1:
-        # build kdtree
-        tree = scipy.spatial.KDTree(points.copy(), leafsize=leafsize)
-        # query kdtree
-        distances, locations = tree.query(points, k=4)
-
-    for i, pt in enumerate(points):
+    for i, box in enumerate(boxes):
+        center_x = (box[0] + box[2]) / 2
+        center_y = (box[1] + box[3]) / 2
+        w = box[2] - box[0]
+        h = box[3] - box[1]
         pt2d = np.zeros(img_shape, dtype=np.float32)
-        if int(pt[1]) < img_shape[0] and int(pt[0]) < img_shape[1]:
-            pt2d[int(pt[1]), int(pt[0])] = 1.
-        else:
-            continue
-        if gt_count > 1:
-            sigma = (distances[i][1] + distances[i][2] + distances[i][3]) * beta
-        else:
-            sigma = np.average(np.array([1, 1])) / 2. / 2.  # case: 1 point
-        density_single = scipy.ndimage.filters.gaussian_filter(pt2d, sigma, mode='constant')
-        if boxes:
-            mask = np.zeros(img.shape)
-            mask[boxes[i][0]:boxes[i][2], boxes[i][1]:boxes[i][3]] = 1
-            density_single = density_single * mask
-            zoom = 1 / density_single.sum()
-            density_single = density_single * zoom
-        density = density + density_single
+        pt2d[int(center_y), int(center_x)] = 1.
+        sig_w = w / 2
+        sig_h = h / 2
+        density_single = scipy.ndimage.filters.gaussian_filter(pt2d, [sig_h, sig_w], mode='constant')
+        assert (abs(density_single.sum() - 1) < 0.5)
+        zoom = 1 / density_single.sum()
+        density_single *= zoom
+        density += density_single
+        # plt.suptitle(str(i))
+        # plt.subplot(131)
+        # plt.imshow(img)
+        #
+        # plt.subplot(132)
+        # plt.title('single:%.3f' % density_single.sum())
+        # plt.imshow(density_single * 100000, cmap=cm.jet)
+        #
+        # plt.subplot(133)
+        # plt.title('all:%.3f' % density.sum())
+        # plt.imshow(density * 100000, cmap=cm.jet)
+        # # plt.show()
+        # plt.pause(0.01)
+        # print('#' * 10+str(i)+'#'*10)
 
+    assert abs(density.sum() - gt_count) < 1.
     return density
 
 
 if __name__ == '__main__':
-    f = open(r'../label.txt', 'r')
+    phase = 'train'
+    f = open(r'/dfsdata2/xuwj16_data/widerface/' + phase + '/label.txt', 'r')
     lines = f.readlines()
     content = {}
 
     imgnames = []
     imgboxs = []
 
-    for i in range(len(lines)):
+    for i in tqdm(range(len(lines))):
         if lines[i][-2] == 'g':
             name = lines[i].strip()[2:]
             content[name] = {}
             content[name]['boxes'] = []
             content[name]['center'] = []
             content[name]['rawinfo'] = []
-
         else:
             content[name]['rawinfo'].append(lines[i].strip())
             label = [float(x) for x in lines[i].split(' ')]
             x1 = int(label[0])
             y1 = int(label[1])
+            if label[2] < 1:
+                label[2] = 1
+            if label[3] < 1:
+                label[3] = 1
             x2 = int(label[0] + label[2])
             y2 = int(label[1] + label[3])
-            box_center = [x1, y1, x2, y2]
-            content[name]['boxes'].append(box_center)
-            content[name]['center'].append([(x1 + x2) / 2, (y1 + y2) / 2])
+            box = [x1, y1, x2, y2]
+            content[name]['boxes'].append(box)
+            center = [(x1 + x2) / 2, (y1 + y2) / 2]
+            content[name]['center'].append(center)
 
-    f = open('data_state.pkl', 'wb')
+    f = open('/dfsdata2/xuwj16_data/widerface/' + phase + '/' + phase + '_data_state.pkl', 'wb')
     pickle.dump(content, f)
     f.close()
 
+    root = '/dfsdata2/xuwj16_data/widerface/' + phase + '/images/'
+    plt.ion()
     for k, v in tqdm(content.items()):
-        savename = '/widerface/density/' + k.replace('.jpg', '.pkl')
-        img = cv2.imread(k)
+        savename = '/dfsdata2/xuwj16_data/widerface/' + phase + '/density/' + k.replace('.jpg', '.pkl')
+        temp = {}
+        img = cv2.imread(root + k)
         img_shape = [img.shape[0], img.shape[1]]
-        density = gaussian_filter_density(img, v['center'], v['boxes'])
+        density = gaussian_filter_density(img, v['boxes'])
+        #pdb.set_trace()
+
+        #         plt.subplot(121)
+        #         plt.title('%.4f'%len(v['boxes']))
+        #         plt.imshow(img)
+        #         plt.subplot(122)
+        #         plt.title('%.4f' % (density.sum()))
+        #         plt.imshow(density * 100000)
+        # plt.show()
+        # plt.pause(0.05)
+        # print(k)
         f = open(savename, 'wb')
-        pickle.dump(content, f)
+        temp['data'] = density
+        pickle.dump(temp, f)
         f.close()
+        cv2.imwrite(savename.replace('.pkl','.png'),density*10000)
+
